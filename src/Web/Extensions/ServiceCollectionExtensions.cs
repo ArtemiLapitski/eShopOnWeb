@@ -17,30 +17,47 @@ public static class ServiceCollectionExtensions
 {
     public static void AddDatabaseContexts(this IServiceCollection services, IWebHostEnvironment environment, ConfigurationManager configuration)
     {
-        if (environment.IsDevelopment() || environment.IsDocker())
-        {
-            // Configure SQL Server (local)
-            services.ConfigureLocalDatabaseContexts(configuration);
-        }
-        else
-        {
-            // Configure SQL Server (prod)
-            var credential = new ChainedTokenCredential(new AzureDeveloperCliCredential(), new DefaultAzureCredential());
-            configuration.AddAzureKeyVault(new Uri(configuration["AZURE_KEY_VAULT_ENDPOINT"] ?? ""), credential);
+        // Allow in-memory DB even in Production if explicitly requested
+        var useOnlyInMemory = string.Equals(configuration["UseOnlyInMemoryDatabase"], "true", StringComparison.OrdinalIgnoreCase);
 
-            services.AddDbContext<CatalogContext>((provider, options) =>
-            {
-                var connectionString = configuration[configuration["AZURE_SQL_CATALOG_CONNECTION_STRING_KEY"] ?? ""];
-                options.UseSqlServer(connectionString, sqlOptions => sqlOptions.EnableRetryOnFailure())
-                .AddInterceptors(provider.GetRequiredService<DbCallCountingInterceptor>());
-            });
-            services.AddDbContext<AppIdentityDbContext>((provider,options) =>
-            {
-                var connectionString = configuration[configuration["AZURE_SQL_IDENTITY_CONNECTION_STRING_KEY"] ?? ""];
-                options.UseSqlServer(connectionString, sqlOptions => sqlOptions.EnableRetryOnFailure())
-                                .AddInterceptors(provider.GetRequiredService<DbCallCountingInterceptor>());
-            });
+        if (environment.IsDevelopment() || environment.IsDocker() || useOnlyInMemory)
+        {
+            // Local/dev (or learning mode on Azure) → use EF InMemory / local config
+            services.ConfigureLocalDatabaseContexts(configuration);
+            return;
         }
+
+        // Production path with SQL/Key Vault (only if actually configured)
+        var kvEndpoint = configuration["AZURE_KEY_VAULT_ENDPOINT"];
+        if (!string.IsNullOrWhiteSpace(kvEndpoint))
+        {
+            var credential = new ChainedTokenCredential(new AzureDeveloperCliCredential(), new DefaultAzureCredential());
+            configuration.AddAzureKeyVault(new Uri(kvEndpoint), credential);
+        }
+
+        services.AddDbContext<CatalogContext>((provider, options) =>
+        {
+            var catalogKey = configuration["AZURE_SQL_CATALOG_CONNECTION_STRING_KEY"];
+            var connectionString = string.IsNullOrWhiteSpace(catalogKey) ? null : configuration[catalogKey];
+
+            if (string.IsNullOrWhiteSpace(connectionString))
+                throw new InvalidOperationException("Missing Catalog DB connection string. Set AZURE_SQL_CATALOG_CONNECTION_STRING_KEY and its value (or enable UseOnlyInMemoryDatabase).");
+
+            options.UseSqlServer(connectionString, sql => sql.EnableRetryOnFailure())
+                   .AddInterceptors(provider.GetRequiredService<DbCallCountingInterceptor>());
+        });
+
+        services.AddDbContext<AppIdentityDbContext>((provider, options) =>
+        {
+            var identityKey = configuration["AZURE_SQL_IDENTITY_CONNECTION_STRING_KEY"];
+            var connectionString = string.IsNullOrWhiteSpace(identityKey) ? null : configuration[identityKey];
+
+            if (string.IsNullOrWhiteSpace(connectionString))
+                throw new InvalidOperationException("Missing Identity DB connection string. Set AZURE_SQL_IDENTITY_CONNECTION_STRING_KEY and its value (or enable UseOnlyInMemoryDatabase).");
+
+            options.UseSqlServer(connectionString, sql => sql.EnableRetryOnFailure())
+                   .AddInterceptors(provider.GetRequiredService<DbCallCountingInterceptor>());
+        });
     }
 
     public static void AddCookieAuthentication(this IServiceCollection services)

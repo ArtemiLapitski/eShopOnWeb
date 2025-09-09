@@ -85,7 +85,16 @@ builder.Services.Configure<ServiceConfig>(config =>
 builder.Services.AddBlazor(builder.Configuration);
 
 builder.Services.AddMetronome();
-builder.AddSeqEndpoint(connectionName: "seq");
+//builder.AddSeqEndpoint(connectionName: "seq");
+var seqUrl =
+    builder.Configuration["Aspire:Seq:ServerUrl"] ??
+    builder.Configuration["Seq:ServerUrl"] ??
+    builder.Configuration["SEQ__SERVERURL"]; // env-var style
+
+if (!string.IsNullOrWhiteSpace(seqUrl))
+{
+    builder.AddSeqEndpoint(connectionName: "seq");
+}
 
 builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 
